@@ -33,7 +33,7 @@ functionList = ['resize', 'resize_', 'random_flip_horizon', 'random_flip_vertica
                 'random_autocontrast', 'random_adjustSharpness', 'random_solarize', 'random_posterize',
                 'random_grayscale', 'gaussian_blur', 'random_invert', 'random_cutout', 'random_erasing',
                 'random_bright', 'random_contrast', 'random_saturation', 'add_gasuss_noise', 'add_salt_noise',
-                'add_pepper_noise', 'mixup', 'random_perspective', 'random_rotate']
+                'add_pepper_noise', 'mixup', 'random_perspective', 'random_rotate', 'mosaic']
 
 
 class RandomHorizontalFlip(torch.nn.Module):
@@ -234,6 +234,111 @@ def cutout(im, labels):
         im[ymin:ymax, xmin:xmax] = [random.randint(64, 191) for _ in range(3)]
 
     return im, labels
+
+
+def convert(size, box):
+    dw = 1. / (size[0])
+    dh = 1. / (size[1])
+    x = (box[0] + box[1]) / 2.0 - 1
+    y = (box[2] + box[3]) / 2.0 - 1
+    w = box[1] - box[0]
+    h = box[3] - box[2]
+    x = x * dw
+    w = w * dw
+    y = y * dh
+    h = h * dh
+    return x, y, w, h
+
+
+def load_json_points_to_norm(file, cls, size):
+    assert isinstance(file, str)
+    with open(file, 'r', encoding="utf-8") as f:
+        doc = json.load(f)
+    point = []
+    for multi in doc["shapes"]:
+        points = np.array(multi["points"])
+        xmin = min(points[:, 0]) if min(points[:, 0]) > 0 else 0
+        xmax = max(points[:, 0]) if max(points[:, 0]) > 0 else 0
+        ymin = min(points[:, 1]) if min(points[:, 1]) > 0 else 0
+        ymax = max(points[:, 1]) if max(points[:, 1]) > 0 else 0
+        label = multi["label"]
+        if xmax <= xmin:
+            pass
+        elif ymax <= ymin:
+            pass
+        else:
+            cls_id = cls.index(label)
+            b = (float(xmin), float(xmax), float(ymin), float(ymax))
+            bb = convert(size, b)
+            point.append([cls_id] + list(bb))
+
+    return torch.tensor(point)
+
+
+def load_image(path, img_size=640, augment=False):
+    im = cv2.imread(path)  # BGR
+    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+    assert im is not None, f'Image Not Found {path}'
+
+    h0, w0 = im.shape[:2]  # orig hw
+    r = img_size / max(h0, w0)  # ratio
+    if r != 1:  # if sizes are not equal
+        im = cv2.resize(im,
+                        (int(w0 * r), int(h0 * r)),
+                        interpolation=cv2.INTER_LINEAR if (augment or r > 1) else cv2.INTER_AREA)
+    return im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
+
+
+def xywhn2xyxy(x, w=640, h=640, padw=0, padh=0):
+    # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + padw  # top left x
+    y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + padh  # top left y
+    y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + padw  # bottom right x
+    y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
+    return y
+
+
+def load_mosaic(imgpath, cls, imgfile, img_size=640):
+    labels4 = []
+    s = img_size
+    mosaic_border = [-img_size // 2, -img_size // 2]
+    yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in mosaic_border)  # mosaic center x, y
+    files = np.concatenate([np.array([imgpath]), np.random.choice(imgfile, size=3, replace=False)])
+    random.shuffle(files)
+    for i, file in enumerate(files):
+        # Load image
+        img, (oh, ow), (h, w) = load_image(file)
+        jsonpath = '.'.join(file.split('.')[:-1]) + '.json'
+        points = load_json_points_to_norm(jsonpath, cls, (oh, ow))
+        # place img in img4
+        if i == 0:  # top left
+            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+            x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+        elif i == 1:  # top right
+            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+            x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+        elif i == 2:  # bottom left
+            x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+            x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+        elif i == 3:  # bottom right
+            x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+            x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+
+        img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+        padw = x1a - x1b
+        padh = y1a - y1b
+
+        if points.size:
+            points[:, 1:] = xywhn2xyxy(points[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format
+        labels4.append(points)
+
+    labels4 = np.concatenate(labels4, 0)
+    for x in (labels4[:, 1:]):
+        np.clip(x, 0, 2 * s, out=x)
+
+    return Image.fromarray(img4), torch.from_numpy(labels4)
 
 
 class DataAugmentation(object):
@@ -473,7 +578,7 @@ class DataAugmentation(object):
         img = transform(img)
         return img, boxes
 
-    def random_perspective(self, img, boxes, degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
+    def random_perspective(self, img, boxes, degrees=5, translate=.1, scale=.1, shear=5, perspective=0.0,
                            border=(0, 0)):
         img = np.array(img)
         img, boxes = random_perspective(img, boxes.numpy(), degrees=degrees, translate=translate, scale=scale,
@@ -613,6 +718,15 @@ class DataAugmentation(object):
             return self.to_image(miximg), torch.cat([box1, box2])
         return img1, box1
 
+    def mosaic(self, imgpath, cls, imgfile, img_size=640):
+        p = torch.rand(1)
+        if p > 0.5:
+            return load_mosaic(imgpath, cls, imgfile, img_size=img_size)
+        else:
+            img = Image.open(imgpath)
+            jsonpath = '.'.join(imgpath.split('.')[:-1]) + '.json'
+            return img, load_json_points(jsonpath, cls)
+
     def draw_img(self, img, boxes):
         draw = ImageDraw.Draw(img)
         for box in boxes:
@@ -692,7 +806,10 @@ def create_datasets(method, extimes=1, path=ROOT_DIR):
     """
     if 'mixup' in method:
         method.remove('mixup')
-        method.insert(len(method)-1, 'mixup')
+        method.insert(len(method) - 1, 'mixup')
+    if 'mosaic' in method:
+        method.remove('mosaic')
+        method.insert(0, 'mosaic')
     classname = 'DataAugmentation()'
     files = glob(path + "\\*.json")
     cls = get_all_class(files)
@@ -721,6 +838,8 @@ def create_datasets(method, extimes=1, path=ROOT_DIR):
                         points1 = load_json_points(jsonpath1, cls)
                         image1 = Image.open(imagepath)
                         image, points = eval(func)(image, image1, points, points1)
+                    elif funcname == 'mosaic':
+                        image, points = eval(func)(imgfile, cls, imgfiles)
                     else:
                         image, points = eval(func)(image, points)
 
@@ -745,5 +864,5 @@ if __name__ == '__main__':
     meth填想要的图像增强方法，所有方法已列在functionList中
     extimes表示扩充倍数
     """
-    meth = ['random_rotate', 'random_flip_horizon', 'gaussian_blur', 'mixup', 'random_perspective', 'random_cutout']
+    meth = ['random_rotate', 'random_flip_horizon', 'gaussian_blur', 'mixup', 'random_cutout', 'mosaic', ]
     create_datasets(method=meth, extimes=3)
