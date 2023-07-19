@@ -219,7 +219,7 @@ def random_perspective(im, targets=(), degrees=10, translate=.1, scale=.1, shear
 
 def cutout(im, labels):
     h, w = im.shape[:2]
-    scales = [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16  # image size fraction [0.5] * 1 +
+    scales = [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16  # image size fraction [0.5] * 1 + [0.25] * 2 +
     for s in scales:
         mask_h = random.randint(1, int(h * s))  # create random masks
         mask_w = random.randint(1, int(w * s))
@@ -237,8 +237,8 @@ def cutout(im, labels):
 
 
 def convert(size, box):
-    dw = 1. / (size[0])
-    dh = 1. / (size[1])
+    dh = 1. / (size[0])
+    dw = 1. / (size[1])
     x = (box[0] + box[1]) / 2.0 - 1
     y = (box[2] + box[3]) / 2.0 - 1
     w = box[1] - box[0]
@@ -570,7 +570,7 @@ class DataAugmentation(object):
         img = Image.fromarray(img)
         return img, boxes
 
-    def random_rotate(self, img, boxes, degrees=5, expand=False, center=None, fill=0, resample=None):
+    def random_rotate(self, img, boxes, degrees=3, expand=False, center=None, fill=0, resample=None):
         degree = torch.randint(0, degrees + 1, (1,))
         degree = degree.item()
         transform = self.transforms.RandomRotation(degrees=degree, expand=expand, center=center, fill=fill,
@@ -578,7 +578,7 @@ class DataAugmentation(object):
         img = transform(img)
         return img, boxes
 
-    def random_perspective(self, img, boxes, degrees=5, translate=.1, scale=.1, shear=5, perspective=0.0,
+    def random_perspective(self, img, boxes, degrees=3, translate=.1, scale=.1, shear=5, perspective=0.0,
                            border=(0, 0)):
         img = np.array(img)
         img, boxes = random_perspective(img, boxes.numpy(), degrees=degrees, translate=translate, scale=scale,
@@ -609,7 +609,7 @@ class DataAugmentation(object):
         img = transform(self.to_tensor(img))
         return self.to_image(img), boxes
 
-    def random_bright(self, img, boxes, u=32):
+    def random_bright(self, img, boxes, u=16):
         """
         随机亮度
         :param img: Image
@@ -623,7 +623,7 @@ class DataAugmentation(object):
         img = img.clamp(min=0.0, max=1.0)
         return self.to_image(img), boxes
 
-    def random_contrast(self, img, boxes, lower=0.5, upper=1.5):
+    def random_contrast(self, img, boxes, lower=0.75, upper=1.25):
         """
         随机对比度
         :param img: Image
@@ -775,7 +775,8 @@ def create_json(img, imagePath, filename, cls, points):
     data['shapes'] = info
     data['imagePath'] = imagePath
     height, width = img.shape[:2]
-    data['imageData'] = img_arr_to_b64(img).decode('utf-8')
+    # data['imageData'] = img_arr_to_b64(img).decode('utf-8')
+    data['imageData'] = None  # 减少内存占用
     data['imageHeight'] = height
     data['imageWidth'] = width
     jsondata = json.dumps(data, indent=4, separators=(',', ': '))
@@ -786,13 +787,23 @@ def create_json(img, imagePath, filename, cls, points):
 
 def get_all_class(files):
     classes = list()
-    for filename in files:
+    print('get class name ......')
+    for filename in tqdm(files):
         json_file = json.load(open(filename, "r", encoding="utf-8"))
         for item in json_file["shapes"]:
             label_class = item['label']
             if label_class not in classes:
                 classes.append(label_class)
-    return classes
+    # CLS 需要修改
+    CLS = ['head', 'person']
+    count = 0
+    for cls in classes:
+        if cls in CLS:
+            count += 1
+    if len(CLS) == count:
+        return CLS
+    else:
+        return classes
 
 
 def create_datasets(method, extimes=1, path=ROOT_DIR):
@@ -813,12 +824,13 @@ def create_datasets(method, extimes=1, path=ROOT_DIR):
     classname = 'DataAugmentation()'
     files = glob(path + "\\*.json")
     cls = get_all_class(files)
-    files = [i.replace("\\", "/").split("/")[-1].split(".json")[0] for i in files]
+    print('processing file ......')
+    files = [i.replace("\\", "/").split("/")[-1].split(".json")[0] for i in tqdm(files)]
     externs = ['png', 'jpg', 'JPEG', 'BMP', 'bmp']
     imgfiles = list()
     for extern in externs:
         imgfiles.extend(glob(path + "\\*." + extern))
-
+    print('enhance image ......')
     for imgfile in tqdm(imgfiles):
         filename = '.'.join(imgfile.split('.')[:-1])
         imgfilename = filename.replace("\\", "/").split("/")[-1]
@@ -849,13 +861,13 @@ def create_datasets(method, extimes=1, path=ROOT_DIR):
                 # eval(d)(image, points)
 
                 new_name = str(t) + '_' + imgfilename
-                new_image = os.path.join(ROOT_DIR, 'create', new_name + '.jpg')
-                if not os.path.exists(os.path.join(ROOT_DIR, 'create')):
-                    os.makedirs(os.path.join(ROOT_DIR, 'create'))
+                new_image = os.path.join(path, 'create', new_name + '.jpg')
+                if not os.path.exists(os.path.join(path, 'create')):
+                    os.makedirs(os.path.join(path, 'create'))
                 image.save(new_image)
 
-                new_json = os.path.join(ROOT_DIR, 'create', new_name + '.json')
-                create_json(np.array(image), new_name, new_json, cls, points)
+                new_json = os.path.join(path, 'create', new_name + '.json')
+                create_json(np.array(image), new_name + '.jpg', new_json, cls, points)
 
 
 if __name__ == '__main__':
@@ -864,5 +876,6 @@ if __name__ == '__main__':
     meth填想要的图像增强方法，所有方法已列在functionList中
     extimes表示扩充倍数
     """
-    meth = ['random_rotate', 'random_flip_horizon', 'gaussian_blur', 'mixup', 'random_cutout', 'mosaic', ]
-    create_datasets(method=meth, extimes=3)
+    path = r'your images and labels path'
+    meth = ['random_flip_horizon', 'gaussian_blur', 'random_contrast','random_bright', 'random_cutout','mixup','mosaic' ]
+    create_datasets(method=meth, extimes=3,path=path)
