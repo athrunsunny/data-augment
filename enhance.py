@@ -219,7 +219,7 @@ def random_perspective(im, targets=(), degrees=10, translate=.1, scale=.1, shear
 
 def cutout(im, labels):
     h, w = im.shape[:2]
-    scales = [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16  # image size fraction [0.5] * 1 + [0.25] * 2 +
+    scales = [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16 # image size fraction [0.5] * 1 +
     for s in scales:
         mask_h = random.randint(1, int(h * s))  # create random masks
         mask_w = random.randint(1, int(w * s))
@@ -570,7 +570,7 @@ class DataAugmentation(object):
         img = Image.fromarray(img)
         return img, boxes
 
-    def random_rotate(self, img, boxes, degrees=3, expand=False, center=None, fill=0, resample=None):
+    def random_rotate(self, img, boxes, degrees=5, expand=False, center=None, fill=0, resample=None):
         degree = torch.randint(0, degrees + 1, (1,))
         degree = degree.item()
         transform = self.transforms.RandomRotation(degrees=degree, expand=expand, center=center, fill=fill,
@@ -578,7 +578,7 @@ class DataAugmentation(object):
         img = transform(img)
         return img, boxes
 
-    def random_perspective(self, img, boxes, degrees=3, translate=.1, scale=.1, shear=5, perspective=0.0,
+    def random_perspective(self, img, boxes, degrees=5, translate=.1, scale=.1, shear=5, perspective=0.0,
                            border=(0, 0)):
         img = np.array(img)
         img, boxes = random_perspective(img, boxes.numpy(), degrees=degrees, translate=translate, scale=scale,
@@ -609,7 +609,7 @@ class DataAugmentation(object):
         img = transform(self.to_tensor(img))
         return self.to_image(img), boxes
 
-    def random_bright(self, img, boxes, u=16):
+    def random_bright(self, img, boxes, u=32):
         """
         随机亮度
         :param img: Image
@@ -623,7 +623,7 @@ class DataAugmentation(object):
         img = img.clamp(min=0.0, max=1.0)
         return self.to_image(img), boxes
 
-    def random_contrast(self, img, boxes, lower=0.75, upper=1.25):
+    def random_contrast(self, img, boxes, lower=0.5, upper=1.5):
         """
         随机对比度
         :param img: Image
@@ -794,16 +794,7 @@ def get_all_class(files):
             label_class = item['label']
             if label_class not in classes:
                 classes.append(label_class)
-    # CLS 需要修改
-    CLS = ['head', 'person']
-    count = 0
-    for cls in classes:
-        if cls in CLS:
-            count += 1
-    if len(CLS) == count:
-        return CLS
-    else:
-        return classes
+    return classes
 
 
 def create_datasets(method, extimes=1, path=ROOT_DIR):
